@@ -1,0 +1,17 @@
+name: CI - Build AuthService.Api
+on:
+  push:         { branches: [ "master" ] }
+  pull_request: { branches: [ "master" ] }
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x', cache: true }
+      - run: dotnet restore XanhNow.Auth.sln
+      - run: dotnet build XanhNow.Auth.sln -c Release --no-restore
+      - run: dotnet publish src/AuthService.Api/AuthService.Api.csproj -c Release -o publish/portable
+      - uses: actions/upload-artifact@v4
+        with: { name: api-portable, path: publish/portable/ }
