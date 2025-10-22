@@ -1,17 +1,74 @@
 name: CI - Build AuthService.Api
+
 on:
-  push:         { branches: [ "master" ] }
-  pull_request: { branches: [ "master" ] }
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  SOLUTION_FILE: XanhNow.Auth.sln
+  API_PROJECT: src/AuthService.Api/AuthService.Api.csproj
+  PORTABLE_OUT: publish/portable
+  LINUX_OUT: publish/linux-x64
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with: { dotnet-version: '8.0.x', cache: true }
-      - run: dotnet restore XanhNow.Auth.sln
-      - run: dotnet build XanhNow.Auth.sln -c Release --no-restore
-      - run: dotnet publish src/AuthService.Api/AuthService.Api.csproj -c Release -o publish/portable
-      - uses: actions/upload-artifact@v4
-        with: { name: api-portable, path: publish/portable/ }
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.sln','**/*.csproj','**/*.props','**/*.targets','global.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore
+        run: dotnet restore $SOLUTION_FILE
+
+      - name: Build (Release)
+        run: dotnet build $SOLUTION_FILE -c Release --no-restore
+
+      - name: Publish API (portable)
+        run: dotnet publish $API_PROJECT -c Release -o $PORTABLE_OUT
+
+      - name: Upload artifact (portable)
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-portable
+          path: ${{ env.PORTABLE_OUT }}
+          if-no-files-found: error
+
+      - name: Publish API (self-contained linux-x64)
+        run: |
+          dotnet publish $API_PROJECT -c Release -r linux-x64 --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:EnableCompressionInSingleFile=true \
+            -o $LINUX_OUT
+
+      - name: Upload artifact (linux-x64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-linux-x64
+          path: ${{ env.LINUX_OUT }}
+          if-no-files-found: error
