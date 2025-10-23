@@ -32,3 +32,6 @@ docker compose -f docker-compose.dev.yml up -d
 - Forgot password flow stores a 6-digit code in Redis (DEV: written to console).
 - Passkey (WebAuthn) endpoints are present; integrate with your frontend to use.
 - Kafka events published: `user.registered`, `user.loggedin`, `user.password.changed`.
+
+## Test
+- test deploy
