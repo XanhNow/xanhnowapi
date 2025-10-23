@@ -1,0 +1,101 @@
+name: CD - Deploy to VM (self-hosted runner)
+
+on:
+  push:
+    branches: [ "master", "main" ]
+
+jobs:
+  deploy:
+    # Nếu runner trên VM có label riêng (vd: vm-dotnet-api), dùng:
+    # runs-on: [self-hosted, vm-dotnet-api]
+    runs-on: self-hosted
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.x'
+
+      - name: Detect Web project (.csproj)
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT=$(grep -RIl --include=\*.csproj 'Sdk="Microsoft.NET.Sdk.Web"' . | head -n1 || true)
+          if [ -z "${PROJECT:-}" ]; then
+            echo "❌ Không tìm thấy project Web (Microsoft.NET.Sdk.Web)."
+            exit 1
+          fi
+          echo "PROJECT=$PROJECT" >> $GITHUB_ENV
+          echo "Found: $PROJECT"
+
+      - name: Publish self-contained (linux-x64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet restore
+          dotnet publish "$PROJECT" -c Release -r linux-x64 --self-contained true \
+            -p:PublishSingleFile=true -p:UseAppHost=true -o ./publish
+
+      - name: Create run.sh (auto-detect)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd ./publish
+          BIN=$(find . -maxdepth 1 -type f -perm -111 ! -name 'run.sh' ! -name '*.dll' | head -n1 || true)
+          DLL=$(find . -maxdepth 1 -type f -name '*.dll' | head -n1 || true)
+          cat > run.sh <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          cd "$(dirname "$0")"
+          if [ -x "./APP_BIN" ]; then
+            exec ./APP_BIN
+          elif [ -f "./APP_DLL" ]; then
+            exec /usr/bin/env dotnet ./APP_DLL
+          else
+            echo "No runnable app found." >&2
+            exit 1
+          fi
+          SH
+          if [ -n "${BIN:-}" ]; then
+            sed -i "s|APP_BIN|${BIN#./}|g" run.sh; sed -i "s|APP_DLL|missing.dll|g" run.sh
+          else
+            sed -i "s|APP_BIN|missing.bin|g" run.sh; sed -i "s|APP_DLL|${DLL#./}|g" run.sh
+          fi
+          chmod +x run.sh
+          echo "run.sh ready"
+
+      - name: Deploy to /opt/xanhnow-auth
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_DIR="/opt/xanhnow-auth/releases/${GITHUB_SHA}"
+          sudo mkdir -p "$RELEASE_DIR"
+          sudo rsync -a ./publish/ "$RELEASE_DIR"/
+          sudo chown -R deploy:deploy "$RELEASE_DIR"
+          sudo ln -sfn "$RELEASE_DIR" /opt/xanhnow-auth/current
+          sudo chmod g+s /opt/xanhnow-auth /opt/xanhnow-auth/releases /opt/xanhnow-auth/shared /opt/xanhnow-auth/logs
+          sudo chown -R deploy:deploy /opt/xanhnow-auth
+
+      - name: Restart service & health check
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo systemctl restart xanhnow-auth
+          for i in {1..15}; do
+            for path in /health /swagger /; do
+              if curl -fsS "http://127.0.0.1:5000${path}" >/dev/null 2>&1; then
+                echo "Health OK via ${path}"; exit 0
+              fi
+            done
+            sleep 2
+          done
+          echo "❌ Health check fail — logs:"
+          sudo journalctl -u xanhnow-auth -n 200 --no-pager
+          exit 1
