@@ -3,26 +3,42 @@ name: CD - Deploy to VM (self-hosted runner)
 on:
   push:
     branches: [ "master", "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   deploy:
-    runs-on: [self-hosted, vm-dotnet-api]   # ép chạy đúng runner mới
-    env:
-      PROJECT: "src/AuthService.Api/AuthService.Api.csproj"   # 👈 sửa nếu khác
-      APP_DIR: "/opt/xanhnow-auth"
-      PORT: "5000"
-
+    runs-on: [self-hosted, vm-dotnet-api]   # ép chạy đúng runner của VM
     permissions:
       contents: read
+    env:
+      PROJECT: "src/AuthService.Api/AuthService.Api.csproj"  # ⇦ sửa nếu .csproj khác
+      APP_DIR: "/opt/xanhnow-auth"
+      PORT: "5000"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET 8 SDK
+      # Cài .NET SDK vào thư mục job (không cần sudo)
+      - name: Setup .NET 8 SDK (user-local, no sudo)
         uses: actions/setup-dotnet@v4
+        env:
+          DOTNET_INSTALL_DIR: ${{ github.workspace }}/.dotnet
         with:
-          dotnet-version: '8.x'
+          dotnet-version: '8.0.x'
+          cache: false
+
+      - name: Export dotnet to PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "DOTNET_ROOT=${GITHUB_WORKSPACE}/.dotnet" >> $GITHUB_ENV
+          echo "${GITHUB_WORKSPACE}/.dotnet" >> $GITHUB_PATH
+          dotnet --info
 
       - name: Verify project file exists
         shell: bash
@@ -31,16 +47,16 @@ jobs:
           test -f "$PROJECT" || { echo "❌ PROJECT not found: $PROJECT"; exit 1; }
           echo "Found PROJECT: $PROJECT"
 
-      - name: Publish self-contained (linux-x64)
+      - name: Restore & Publish (self-contained linux-x64)
         shell: bash
         run: |
           set -euo pipefail
-          dotnet restore
+          dotnet restore "$PROJECT"
           dotnet publish "$PROJECT" -c Release -r linux-x64 --self-contained true \
             -p:PublishSingleFile=true -p:UseAppHost=true -o ./publish
           ls -la ./publish
 
-      - name: Create run.sh (auto-detect)
+      - name: Create run.sh
         shell: bash
         run: |
           set -euo pipefail
@@ -77,7 +93,7 @@ jobs:
           if command -v rsync >/dev/null 2>&1; then
             sudo rsync -a ./publish/ "$RELEASE_DIR"/
           else
-            echo "rsync not found, using cp -a"
+            echo "rsync not found, fallback to cp -a"
             sudo cp -a ./publish/. "$RELEASE_DIR"/
           fi
           sudo chown -R deploy:deploy "$RELEASE_DIR"
@@ -98,6 +114,6 @@ jobs:
             done
             sleep 2
           done
-          echo "❌ Health check fail — logs:"
+          echo "❌ Health check failed — printing logs"
           sudo journalctl -u xanhnow-auth -n 200 --no-pager
           exit 1
