@@ -1,0 +1,11 @@
+C:\Users\xanhn\OneDrive\Desktop\XanhNow.Auth\src\AuthService.Domain\bin\Debug\net8.0\AuthService.Domain.deps.json
+C:\Users\xanhn\OneDrive\Desktop\XanhNow.Auth\src\AuthService.Domain\bin\Debug\net8.0\AuthService.Domain.dll
+C:\Users\xanhn\OneDrive\Desktop\XanhNow.Auth\src\AuthService.Domain\bin\Debug\net8.0\AuthService.Domain.pdb
+C:\Users\xanhn\OneDrive\Desktop\XanhNow.Auth\src\AuthService.Domain\obj\Debug\net8.0\AuthService.Domain.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\xanhn\OneDrive\Desktop\XanhNow.Auth\src\AuthService.Domain\obj\Debug\net8.0\AuthService.Domain.AssemblyInfoInputs.cache
+C:\Users\xanhn\OneDrive\Desktop\XanhNow.Auth\src\AuthService.Domain\obj\Debug\net8.0\AuthService.Domain.AssemblyInfo.cs
+C:\Users\xanhn\OneDrive\Desktop\XanhNow.Auth\src\AuthService.Domain\obj\Debug\net8.0\AuthService.Domain.csproj.CoreCompileInputs.cache
+C:\Users\xanhn\OneDrive\Desktop\XanhNow.Auth\src\AuthService.Domain\obj\Debug\net8.0\AuthService.Domain.dll
+C:\Users\xanhn\OneDrive\Desktop\XanhNow.Auth\src\AuthService.Domain\obj\Debug\net8.0\refint\AuthService.Domain.dll
+C:\Users\xanhn\OneDrive\Desktop\XanhNow.Auth\src\AuthService.Domain\obj\Debug\net8.0\AuthService.Domain.pdb
+C:\Users\xanhn\OneDrive\Desktop\XanhNow.Auth\src\AuthService.Domain\obj\Debug\net8.0\ref\AuthService.Domain.dll

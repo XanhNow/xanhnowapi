@@ -95,6 +95,8 @@ builder.Services.AddRateLimiter(_ => _.AddFixedWindowLimiter("auth",
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+//
+builder.Services.AddHealthChecks();
 
 var app = builder.Build();
 
@@ -114,5 +116,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+app.MapHealthChecks("/healthz");
 
 app.Run();
