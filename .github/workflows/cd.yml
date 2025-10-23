@@ -11,11 +11,11 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: [self-hosted, vm-dotnet-api]   # ép chạy đúng runner của VM
+    runs-on: [self-hosted, vm-dotnet-api]   # ép chạy đúng runner VM
     permissions:
       contents: read
     env:
-      PROJECT: "src/AuthService.Api/AuthService.Api.csproj"  # ⇦ sửa nếu .csproj khác
+      PROJECT: "src/AuthService.Api/AuthService.Api.csproj"   # ⇦ sửa nếu .csproj khác
       APP_DIR: "/opt/xanhnow-auth"
       PORT: "5000"
 
@@ -23,22 +23,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Cài .NET SDK vào thư mục job (không cần sudo)
-      - name: Setup .NET 8 SDK (user-local, no sudo)
-        uses: actions/setup-dotnet@v4
-        env:
-          DOTNET_INSTALL_DIR: ${{ github.workspace }}/.dotnet
-        with:
-          dotnet-version: '8.0.x'
-          cache: false
-
-      - name: Export dotnet to PATH
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "DOTNET_ROOT=${GITHUB_WORKSPACE}/.dotnet" >> $GITHUB_ENV
-          echo "${GITHUB_WORKSPACE}/.dotnet" >> $GITHUB_PATH
-          dotnet --info
+      - name: Verify dotnet on VM
+        run: dotnet --info
 
       - name: Verify project file exists
         shell: bash
@@ -56,31 +42,28 @@ jobs:
             -p:PublishSingleFile=true -p:UseAppHost=true -o ./publish
           ls -la ./publish
 
-      - name: Create run.sh
+      - name: Create run.sh (auto-detect exe/dll)
         shell: bash
         run: |
           set -euo pipefail
           cd ./publish
-          BIN=$(find . -maxdepth 1 -type f -perm -111 ! -name 'run.sh' ! -name '*.dll' | head -n1 || true)
-          DLL=$(find . -maxdepth 1 -type f -name '*.dll' | head -n1 || true)
           cat > run.sh <<'SH'
           #!/usr/bin/env bash
           set -euo pipefail
           cd "$(dirname "$0")"
-          if [ -x "./APP_BIN" ]; then
-            exec ./APP_BIN
-          elif [ -f "./APP_DLL" ]; then
-            exec /usr/bin/env dotnet ./APP_DLL
+          export ASPNETCORE_URLS="${ASPNETCORE_URLS:-http://127.0.0.1:5000}"
+          exe=$(find . -maxdepth 1 -type f -perm -111 ! -name "run.sh" ! -name "*.dll" | head -n1 || true)
+          dll=$(find . -maxdepth 1 -type f -name "*.dll" | head -n1 || true)
+          if [ -n "${exe:-}" ]; then
+            exec "$exe"
+          elif [ -n "${dll:-}" ]; then
+            exec /usr/bin/env dotnet "$dll"
           else
-            echo "No runnable app found." >&2
+            echo "No runnable app (exe/dll) found in $(pwd)" >&2
+            ls -la
             exit 1
           fi
           SH
-          if [ -n "${BIN:-}" ]; then
-            sed -i "s|APP_BIN|${BIN#./}|g" run.sh; sed -i "s|APP_DLL|missing.dll|g" run.sh
-          else
-            sed -i "s|APP_BIN|missing.bin|g" run.sh; sed -i "s|APP_DLL|${DLL#./}|g" run.sh
-          fi
           chmod +x run.sh
           echo "run.sh ready"
 
@@ -89,31 +72,46 @@ jobs:
         run: |
           set -euo pipefail
           RELEASE_DIR="${APP_DIR}/releases/${GITHUB_SHA}"
-          sudo mkdir -p "$RELEASE_DIR"
+          sudo -n mkdir -p "$RELEASE_DIR"
           if command -v rsync >/dev/null 2>&1; then
-            sudo rsync -a ./publish/ "$RELEASE_DIR"/
+            sudo -n rsync -a ./publish/ "$RELEASE_DIR"/
           else
             echo "rsync not found, fallback to cp -a"
-            sudo cp -a ./publish/. "$RELEASE_DIR"/
+            sudo -n cp -a ./publish/. "$RELEASE_DIR"/
           fi
-          sudo chown -R deploy:deploy "$RELEASE_DIR"
-          sudo ln -sfn "$RELEASE_DIR" "${APP_DIR}/current"
-          sudo chmod g+s ${APP_DIR} ${APP_DIR}/releases ${APP_DIR}/shared ${APP_DIR}/logs
-          sudo chown -R deploy:deploy ${APP_DIR}
+          sudo -n chown -R deploy:deploy "$RELEASE_DIR"
 
-      - name: Restart service & health check
+          # BẢO ĐẢM 'current' LUÔN LÀ SYMLINK → TRỎ THẲNG VÀO RELEASE MỚI
+          sudo -n rm -rf "${APP_DIR}/current"
+          sudo -n ln -sfnT "$RELEASE_DIR" "${APP_DIR}/current"
+
+          sudo -n chmod g+s ${APP_DIR} ${APP_DIR}/releases ${APP_DIR}/shared ${APP_DIR}/logs
+          sudo -n chown -R deploy:deploy ${APP_DIR}
+
+          # Debug ngắn
+          echo "--- APP_DIR ---"
+          sudo -n ls -la "${APP_DIR}" | sed -n '1,100p'
+          echo "--- CURRENT ---"
+          sudo -n ls -la "${APP_DIR}/current" | sed -n '1,80p'
+
+      - name: Restart service & health check (robust)
         shell: bash
         run: |
           set -euo pipefail
-          sudo systemctl restart xanhnow-auth
-          for i in {1..20}; do
-            for path in /health /swagger /; do
-              if curl -fsS "http://127.0.0.1:${PORT}${path}" >/dev/null 2>&1; then
-                echo "Health OK via ${path}"; exit 0
+          sudo -n systemctl restart xanhnow-auth
+
+          echo "Waiting for service to accept HTTP..."
+          for i in {1..30}; do
+            for path in /healthz /health /swagger/index.html /; do
+              code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${PORT}${path}" || true)
+              if [ "$code" != "000" ]; then
+                echo "Ready via ${path} (HTTP $code)"
+                exit 0
               fi
             done
-            sleep 2
+            sleep 1
           done
-          echo "❌ Health check failed — printing logs"
-          sudo journalctl -u xanhnow-auth -n 200 --no-pager
+
+          echo "❌ Service not reachable (HTTP 000). Recent logs:"
+          sudo -n journalctl -u xanhnow-auth -n 200 --no-pager
           exit 1
