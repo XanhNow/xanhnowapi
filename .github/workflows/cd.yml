@@ -11,19 +11,22 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: [self-hosted, vm-dotnet-api]   # ép chạy đúng runner VM
+    runs-on: [self-hosted, vm-dotnet-api]   # chạy đúng runner trên VM
     permissions:
       contents: read
     env:
-      PROJECT: "src/AuthService.Api/AuthService.Api.csproj"   # ⇦ sửa nếu .csproj khác
+      SERVICE_NAME: "xanhnow-auth"
+      PROJECT: "src/AuthService.Api/AuthService.Api.csproj"   # ⇦ đổi nếu khác
       APP_DIR: "/opt/xanhnow-auth"
       PORT: "5000"
+      HEALTH_PATHS: "/healthz /health /swagger/index.html /"
+      KEEP_RELEASES: "5"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify dotnet on VM
+      - name: Verify .NET on VM
         run: dotnet --info
 
       - name: Verify project file exists
@@ -31,7 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f "$PROJECT" || { echo "❌ PROJECT not found: $PROJECT"; exit 1; }
-          echo "Found PROJECT: $PROJECT"
+          echo "✅ Found PROJECT: $PROJECT"
 
       - name: Restore & Publish (self-contained linux-x64)
         shell: bash
@@ -40,6 +43,7 @@ jobs:
           dotnet restore "$PROJECT"
           dotnet publish "$PROJECT" -c Release -r linux-x64 --self-contained true \
             -p:PublishSingleFile=true -p:UseAppHost=true -o ./publish
+          echo "📦 Publish output:"
           ls -la ./publish
 
       - name: Create run.sh (auto-detect exe/dll)
@@ -51,67 +55,102 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
           cd "$(dirname "$0")"
+          # Cho phép override từ EnvironmentFile của systemd
           export ASPNETCORE_URLS="${ASPNETCORE_URLS:-http://127.0.0.1:5000}"
+
           exe=$(find . -maxdepth 1 -type f -perm -111 ! -name "run.sh" ! -name "*.dll" | head -n1 || true)
           dll=$(find . -maxdepth 1 -type f -name "*.dll" | head -n1 || true)
+
           if [ -n "${exe:-}" ]; then
+            echo "▶️  Running self-contained binary: $exe"
             exec "$exe"
           elif [ -n "${dll:-}" ]; then
+            echo "▶️  Running DLL with dotnet: $dll"
             exec /usr/bin/env dotnet "$dll"
           else
-            echo "No runnable app (exe/dll) found in $(pwd)" >&2
+            echo "❌ No runnable app (exe/dll) found in $(pwd)" >&2
             ls -la
             exit 1
           fi
           SH
           chmod +x run.sh
-          echo "run.sh ready"
+          echo "✅ run.sh ready"
 
-      - name: Deploy to ${APP_DIR}
+      - name: Deploy to ${{ env.APP_DIR }}
         shell: bash
         run: |
           set -euo pipefail
+          sudo -n mkdir -p "${APP_DIR}/releases" "${APP_DIR}/logs" "${APP_DIR}/shared"
+
           RELEASE_DIR="${APP_DIR}/releases/${GITHUB_SHA}"
           sudo -n mkdir -p "$RELEASE_DIR"
+
           if command -v rsync >/dev/null 2>&1; then
             sudo -n rsync -a ./publish/ "$RELEASE_DIR"/
           else
-            echo "rsync not found, fallback to cp -a"
+            echo "⚠️ rsync not found, fallback to cp -a"
             sudo -n cp -a ./publish/. "$RELEASE_DIR"/
           fi
+
           sudo -n chown -R deploy:deploy "$RELEASE_DIR"
 
-          # BẢO ĐẢM 'current' LUÔN LÀ SYMLINK → TRỎ THẲNG VÀO RELEASE MỚI
+          # current luôn là symlink trỏ TỚI release mới
           sudo -n rm -rf "${APP_DIR}/current"
           sudo -n ln -sfnT "$RELEASE_DIR" "${APP_DIR}/current"
 
-          sudo -n chmod g+s ${APP_DIR} ${APP_DIR}/releases ${APP_DIR}/shared ${APP_DIR}/logs
-          sudo -n chown -R deploy:deploy ${APP_DIR}
+          sudo -n chmod g+s "${APP_DIR}" "${APP_DIR}/releases" "${APP_DIR}/shared" "${APP_DIR}/logs"
+          sudo -n chown -R deploy:deploy "${APP_DIR}"
 
-          # Debug ngắn
           echo "--- APP_DIR ---"
-          sudo -n ls -la "${APP_DIR}" | sed -n '1,100p'
+          sudo -n ls -la "${APP_DIR}" | sed -n '1,120p'
           echo "--- CURRENT ---"
-          sudo -n ls -la "${APP_DIR}/current" | sed -n '1,80p'
+          sudo -n ls -la "${APP_DIR}/current" | sed -n '1,120p'
 
-      - name: Restart service & health check (robust)
+      - name: Prune old releases (keep last ${{ env.KEEP_RELEASES }})
         shell: bash
         run: |
           set -euo pipefail
-          sudo -n systemctl restart xanhnow-auth
+          cd "${APP_DIR}/releases" || exit 0
+          # giữ N release mới nhất, xóa phần còn lại
+          sudo -n ls -1dt */ 2>/dev/null | tail -n +$((KEEP_RELEASES+1)) | xargs -r sudo -n rm -rf || true
 
-          echo "Waiting for service to accept HTTP..."
+      - name: Restart service & health check
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n systemctl daemon-reload || true
+          sudo -n systemctl enable "${SERVICE_NAME}" || true
+          sudo -n systemctl restart "${SERVICE_NAME}"
+
+          echo "⏳ Waiting for HTTP readiness on :${PORT} ..."
+          # chờ socket lắng nghe trước (tối đa ~30s)
           for i in {1..30}; do
-            for path in /healthz /health /swagger/index.html /; do
+            if ss -lnt 2>/dev/null | grep -q ":${PORT}"; then
+              break
+            fi
+            sleep 1
+          done
+
+          # thử nhiều đường dẫn (tùy app có /healthz hay không)
+          for i in {1..30}; do
+            for path in ${HEALTH_PATHS}; do
               code=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:${PORT}${path}" || true)
               if [ "$code" != "000" ]; then
-                echo "Ready via ${path} (HTTP $code)"
+                echo "✅ App ready via ${path} (HTTP ${code})"
+                echo "Deployed commit: ${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
                 exit 0
               fi
             done
             sleep 1
           done
 
-          echo "❌ Service not reachable (HTTP 000). Recent logs:"
-          sudo -n journalctl -u xanhnow-auth -n 200 --no-pager
+          echo "❌ Service not reachable. Recent logs:"
+          sudo -n journalctl -u "${SERVICE_NAME}" -n 200 --no-pager
           exit 1
+
+      - name: Show last logs (on failure)
+        if: failure()
+        shell: bash
+        run: |
+          sudo -n systemctl status "${SERVICE_NAME}" --no-pager || true
+          sudo -n journalctl -u "${SERVICE_NAME}" -n 400 --no-pager || true
